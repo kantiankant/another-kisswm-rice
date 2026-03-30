@@ -10,7 +10,7 @@ A minimal X11 desktop. Does its job. Doesn't make a song and dance about it.
 
 | Thing | What it is |
 |---|---|
-| WM | [kisswm](https://github.com/slendr/kisswm) |
+| WM | [kisswm](https://github.com/kantiankant/KissWM-Improved) |
 | Bar | kantbar (homemade, don't ask) |
 | Terminal | [st](https://st.suckless.org) with alpha + scrollback patches |
 | Notifications / OSD | [dunst](https://dunst-project.org) |
