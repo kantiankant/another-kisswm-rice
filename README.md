@@ -64,8 +64,7 @@ That's it. No install script. No setup wizard. No guided onboarding experience. 
 ## Notes
 
 - SF Pro is Apple's proprietary font and obtaining it is your own problem. You'll know where to look.
-- `idk.txt` is not documented. It wasn't documented when it was written either.
-- Tested on Gentoo. Probably works elsewhere. Probably.
+- Tested on Gentoo. Probably works elsewhere just fine.
 
 ---
 
