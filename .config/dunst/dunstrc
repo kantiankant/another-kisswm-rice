@@ -1,0 +1,97 @@
+[global]
+    monitor = 0
+    follow = none
+
+    width = 300
+    height = 100
+    origin = top-right
+    offset = 10x30
+    scale = 0
+
+    notification_limit = 5
+    indicate_hidden = yes
+
+    padding = 10
+    horizontal_padding = 10
+    text_icon_padding = 0
+    frame_width = 1
+    frame_color = "#FFFFFF"
+    gap_size = 5
+
+    corner_radius = 5 
+    corners = all
+
+    sort = yes
+    idle_threshold = 120
+
+    font =  SF Pro Display 10
+    line_height = 0
+    markup = full
+    format = "<b>%s</b>\n%b"
+    alignment = left
+    vertical_alignment = center
+    show_age_threshold = 60
+    ellipsize = middle
+    ignore_newline = no
+    stack_duplicates = true
+    hide_duplicate_count = false
+    show_indicators = no
+
+    icon_position = off
+
+    sticky_history = yes
+    history_length = 20
+
+    dmenu = /usr/bin/dmenu -p dunst:
+    browser = /usr/bin/xdg-open
+
+    always_run_script = true
+    title = Dunst
+    class = Dunst
+
+    ignore_dbusclose = false
+    force_xwayland = false
+    force_xinerama = false
+
+    mouse_left_click = close_current
+    mouse_middle_click = do_nothing
+    mouse_right_click = close_all
+
+[experimental]
+    per_monitor_dpi = false
+
+[urgency_low]
+    background = "#000000"
+    foreground = "#888888"
+    frame_color = "#333333"
+    timeout = 3
+
+[urgency_normal]
+    background = "#000000"
+    foreground = "#ffffff"
+    frame_color = "#444444"
+    timeout = 5
+
+[urgency_critical]
+    background = "#000000"
+    foreground = "#ff5555"
+    frame_color = "#ff5555"
+    timeout = 0
+
+[osd]
+    summary = "Volume"
+    background = "#000000"
+    foreground = "#ffffff"
+    frame_color = "#000000"
+    highlight = "#ffffff"
+    timeout = 2
+    format = "%s %b"
+
+[brightness]
+    summary = "Brightness"
+    background = "#000000"
+    foreground = "#ffffff"
+    frame_color = "000000"
+    highlight = "#ffffff"
+    timeout = 2
+    format = "%s %b"

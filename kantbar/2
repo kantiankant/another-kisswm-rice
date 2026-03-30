@@ -1,0 +1,339 @@
+/*
+ * kantbar — minimal status bar for cwm
+ * shows: workspaces, battery, time
+ * compiles with: make
+ */
+
+#include <X11/Xlib.h>
+#include <X11/Xatom.h>
+#include <X11/Xft/Xft.h>
+#include <sys/select.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+/* ── config ───────────────────────────────────────────────── */
+#define BAR_HEIGHT      18
+#define FONT_NAME       "monospace:size=9"
+#define PAD             10
+
+#define COL_BG          "#000000"
+#define COL_FG          "#ffffff"
+#define COL_WS_ACT_BG   "#ffffff"
+#define COL_WS_ACT_FG   "#000000"
+#define COL_WS_INA_BG   "#000000"
+#define COL_WS_INA_FG   "#555555"
+
+#define NUM_WORKSPACES  8
+#define BAT_PATH        "/sys/class/power_supply/BAT1"
+/* ─────────────────────────────────────────────────────────── */
+
+static Display     *dpy;
+static Window       win;
+static int          screen;
+static XftDraw     *xftdraw;
+static XftFont     *font;
+static int          bar_width;
+static int          bar_y;
+
+static XftColor col_bg, col_fg;
+static XftColor col_ws_act_bg, col_ws_act_fg;
+static XftColor col_ws_ina_bg, col_ws_ina_fg;
+
+static Atom net_current_desktop;
+static Atom net_number_of_desktops;
+static Atom net_active_window;
+static Atom net_wm_desktop;
+static Atom net_wm_strut;
+static Atom net_wm_strut_partial;
+static Atom net_wm_window_type;
+static Atom net_wm_window_type_dock;
+static Atom net_wm_state;
+static Atom net_wm_state_sticky;
+
+static void
+alloc_color(XftColor *c, const char *hex)
+{
+    if (!XftColorAllocName(dpy, DefaultVisual(dpy, screen),
+                           DefaultColormap(dpy, screen), hex, c)) {
+        fprintf(stderr, "kantbar: cannot allocate colour %s\n", hex);
+        exit(1);
+    }
+}
+
+static void
+set_struts(void)
+{
+    /* reserve bottom of screen */
+    long strut[4] = { 0, 0, 0, BAR_HEIGHT };
+    long strut_partial[12] = {
+        0, 0, 0, BAR_HEIGHT,
+        0, 0, 0, 0,
+        0, 0,
+        0, bar_width
+    };
+    XChangeProperty(dpy, win, net_wm_strut, XA_CARDINAL, 32,
+                    PropModeReplace, (unsigned char *)strut, 4);
+    XChangeProperty(dpy, win, net_wm_strut_partial, XA_CARDINAL, 32,
+                    PropModeReplace, (unsigned char *)strut_partial, 12);
+}
+
+static void
+set_dock(void)
+{
+    XChangeProperty(dpy, win, net_wm_window_type, XA_ATOM, 32,
+                    PropModeReplace,
+                    (unsigned char *)&net_wm_window_type_dock, 1);
+    XChangeProperty(dpy, win, net_wm_state, XA_ATOM, 32,
+                    PropModeReplace,
+                    (unsigned char *)&net_wm_state_sticky, 1);
+}
+
+static int
+get_num_desktops(void)
+{
+    Atom actual_type;
+    int actual_format;
+    unsigned long n, bytes_left;
+    unsigned char *data = NULL;
+    int num = 1;
+
+    if (XGetWindowProperty(dpy, RootWindow(dpy, screen),
+                           net_number_of_desktops, 0, 1, False,
+                           XA_CARDINAL, &actual_type, &actual_format,
+                           &n, &bytes_left, &data) == Success
+        && data && actual_type == XA_CARDINAL) {
+        num = (int)*(unsigned long *)data;
+        XFree(data);
+    }
+    return num > 0 ? num : 1;
+}
+
+static int
+get_current_desktop(void)
+{
+    Atom actual_type;
+    int actual_format;
+    unsigned long n, bytes_left;
+    unsigned char *data = NULL;
+    int desk = -1;
+
+    if (XGetWindowProperty(dpy, RootWindow(dpy, screen),
+                           net_current_desktop, 0, 1, False,
+                           XA_CARDINAL, &actual_type, &actual_format,
+                           &n, &bytes_left, &data) == Success
+        && data && actual_type == XA_CARDINAL) {
+        desk = (int)*(unsigned long *)data;
+        XFree(data);
+        if (desk >= 0) return desk;
+    }
+
+    data = NULL;
+    if (XGetWindowProperty(dpy, RootWindow(dpy, screen),
+                           net_active_window, 0, 1, False,
+                           XA_WINDOW, &actual_type, &actual_format,
+                           &n, &bytes_left, &data) == Success && data) {
+        Window active = *(Window *)data;
+        XFree(data);
+        data = NULL;
+
+        if (active && active != None) {
+            if (XGetWindowProperty(dpy, active,
+                                   net_wm_desktop, 0, 1, False,
+                                   XA_CARDINAL, &actual_type, &actual_format,
+                                   &n, &bytes_left, &data) == Success && data) {
+                desk = (int)*(unsigned long *)data;
+                XFree(data);
+                return desk;
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int
+get_battery(char *out, size_t len)
+{
+    char path[256];
+    FILE *f;
+    int cap = -1;
+    char status[32] = "Unknown";
+
+    snprintf(path, sizeof(path), "%s/capacity", BAT_PATH);
+    f = fopen(path, "r");
+    if (!f) {
+        snprintf(out, len, "no bat");
+        return 0;
+    }
+    if (fscanf(f, "%d", &cap) != 1) cap = -1;
+    fclose(f);
+
+    snprintf(path, sizeof(path), "%s/status", BAT_PATH);
+    f = fopen(path, "r");
+    if (f) {
+        if (fscanf(f, "%31s", status) != 1)
+            snprintf(status, sizeof(status), "Unknown");
+        fclose(f);
+    }
+
+    char sym = ' ';
+    if (strcmp(status, "Charging") == 0)  sym = '+';
+    else if (strcmp(status, "Full") == 0) sym = '=';
+
+    snprintf(out, len, "bat %c%d%%", sym, cap);
+    return 1;
+}
+
+static void
+draw_text(int *x, const char *text, XftColor *fg, XftColor *bg, int pad)
+{
+    XGlyphInfo ext;
+    XftTextExtentsUtf8(dpy, font, (const FcChar8 *)text, strlen(text), &ext);
+    int w = ext.xOff + pad * 2;
+
+    XftDrawRect(xftdraw, bg, *x, 0, w, BAR_HEIGHT);
+    XftDrawStringUtf8(xftdraw, fg, font,
+                      *x + pad,
+                      (BAR_HEIGHT + font->ascent - font->descent) / 2,
+                      (const FcChar8 *)text, strlen(text));
+    *x += w;
+}
+
+static void
+draw_bar(void)
+{
+    int x = 0;
+    char buf[128];
+    time_t t;
+    struct tm *tm;
+    int cur_desk  = get_current_desktop();
+    int num_desks = get_num_desktops();
+
+    XftDrawRect(xftdraw, &col_bg, 0, 0, bar_width, BAR_HEIGHT);
+
+    for (int i = 0; i < num_desks; i++) {
+        snprintf(buf, sizeof(buf), " %d ", i + 1);
+        if (i == cur_desk)
+            draw_text(&x, buf, &col_ws_act_fg, &col_ws_act_bg, 0);
+        else
+            draw_text(&x, buf, &col_ws_ina_fg, &col_ws_ina_bg, 0);
+    }
+
+    char bat[32] = "";
+    get_battery(bat, sizeof(bat));
+
+    t = time(NULL);
+    tm = localtime(&t);
+    strftime(buf, sizeof(buf), "%H:%M", tm);
+
+    XGlyphInfo ext_bat, ext_time;
+    XftTextExtentsUtf8(dpy, font, (const FcChar8 *)bat,
+                       strlen(bat), &ext_bat);
+    XftTextExtentsUtf8(dpy, font, (const FcChar8 *)buf,
+                       strlen(buf), &ext_time);
+
+    int right_w = ext_bat.xOff + ext_time.xOff + PAD * 4 + 16;
+    int rx = bar_width - right_w;
+
+    draw_text(&rx, bat, &col_fg, &col_bg, PAD);
+    XftDrawRect(xftdraw, &col_ws_ina_fg, rx, 3, 1, BAR_HEIGHT - 6);
+    rx += 1;
+    draw_text(&rx, buf, &col_fg, &col_bg, PAD);
+
+    /* don't raise here — stops bar from stomping over dmenu */
+    XFlush(dpy);
+}
+
+int
+main(void)
+{
+    dpy = XOpenDisplay(NULL);
+    if (!dpy) {
+        fprintf(stderr, "kantbar: cannot open display\n");
+        return 1;
+    }
+    screen    = DefaultScreen(dpy);
+    bar_width = DisplayWidth(dpy, screen);
+    bar_y     = DisplayHeight(dpy, screen) - BAR_HEIGHT;
+
+    net_current_desktop      = XInternAtom(dpy, "_NET_CURRENT_DESKTOP", False);
+    net_number_of_desktops   = XInternAtom(dpy, "_NET_NUMBER_OF_DESKTOPS", False);
+    net_active_window        = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", False);
+    net_wm_desktop           = XInternAtom(dpy, "_NET_WM_DESKTOP", False);
+    net_wm_strut             = XInternAtom(dpy, "_NET_WM_STRUT", False);
+    net_wm_strut_partial     = XInternAtom(dpy, "_NET_WM_STRUT_PARTIAL", False);
+    net_wm_window_type       = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
+    net_wm_window_type_dock  = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DOCK", False);
+    net_wm_state             = XInternAtom(dpy, "_NET_WM_STATE", False);
+    net_wm_state_sticky      = XInternAtom(dpy, "_NET_WM_STATE_STICKY", False);
+
+    XSetWindowAttributes wa;
+    wa.override_redirect = True;
+    wa.background_pixel  = BlackPixel(dpy, screen);
+    wa.event_mask        = ExposureMask | PropertyChangeMask;
+
+    /* bar at the bottom — dmenu spawns at top, no conflict */
+    win = XCreateWindow(dpy, RootWindow(dpy, screen),
+                        0, bar_y, bar_width, BAR_HEIGHT, 0,
+                        DefaultDepth(dpy, screen),
+                        InputOutput,
+                        DefaultVisual(dpy, screen),
+                        CWOverrideRedirect | CWBackPixel | CWEventMask,
+                        &wa);
+
+    set_dock();
+    set_struts();
+
+    XMapWindow(dpy, win);
+    XRaiseWindow(dpy, win);
+    XFlush(dpy);
+
+    XSelectInput(dpy, RootWindow(dpy, screen), PropertyChangeMask);
+
+    font = XftFontOpenName(dpy, screen, FONT_NAME);
+    if (!font) {
+        fprintf(stderr, "kantbar: cannot open font %s\n", FONT_NAME);
+        return 1;
+    }
+
+    xftdraw = XftDrawCreate(dpy, win,
+                            DefaultVisual(dpy, screen),
+                            DefaultColormap(dpy, screen));
+
+    alloc_color(&col_bg,         COL_BG);
+    alloc_color(&col_fg,         COL_FG);
+    alloc_color(&col_ws_act_bg,  COL_WS_ACT_BG);
+    alloc_color(&col_ws_act_fg,  COL_WS_ACT_FG);
+    alloc_color(&col_ws_ina_bg,  COL_WS_INA_BG);
+    alloc_color(&col_ws_ina_fg,  COL_WS_INA_FG);
+
+    draw_bar();
+
+    int xfd = ConnectionNumber(dpy);
+    XEvent ev;
+    for (;;) {
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(xfd, &fds);
+        struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+        select(xfd + 1, &fds, NULL, NULL, &tv);
+
+        while (XPending(dpy)) {
+            XNextEvent(dpy, &ev);
+            if (ev.type == Expose)
+                draw_bar();
+            else if (ev.type == PropertyNotify) {
+                Atom a = ev.xproperty.atom;
+                if (a == net_current_desktop  ||
+                    a == net_number_of_desktops ||
+                    a == net_active_window     ||
+                    a == net_wm_desktop)
+                    draw_bar();
+            }
+        }
+        draw_bar();
+    }
+
